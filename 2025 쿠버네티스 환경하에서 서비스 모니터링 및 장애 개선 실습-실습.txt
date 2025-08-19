@@ -1,0 +1,786 @@
+--- Docker (도커 컨테이너 기술 개요)
+# Docker 엔진 설치
+yum install -y yum-utils
+yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+yum install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin -y
+systemctl enable --now docker
+
+# (홈페이지) 도커 이미지 생성
+tar cvf docker-blue.tar images index.html
+vi Dockerfile-blue
+# Dockerfile 안에 아래 내용 삽입 및 저장
+FROM ubuntu:latest
+RUN apt-get update && apt-get install -y -q nginx
+ADD docker-blue.tar /var/www/html/blue
+CMD ["nginx", "-g", "daemon off;"]
+
+# Docker 빌드
+docker build -t docker:blue -f Dockerfile-blue .
+# Docker 이미지 생성 확인
+docker images
+# Docker create + start (배포/실행)
+docker run -d -p 8181:80 --name blue docker:blue    # 8181(외부포트/host):80(내부포트/container)
+docker ps
+## Docker hub 계정 생성 (pingpong_v@naver.com/이루다8086! (masha5035)
+docker tag docker:blue masha5035/docker:blue     # Docker images로 확인시 Image ID가 동일함, 업로드를 위한 별칭을 붙인 것일 뿐 (태깅 작업)
+docker login -u masha5035
+docker push masha5035/docker:blue
+
+
+tar cvf docker-green.tar images index.html
+vi Dockerfile-green
+FROM ubuntu:latest
+RUN apt-get update && apt-get install -y -q nginx
+ADD docker-green.tar /var/www/html/green
+CMD ["nginx", "-g", "daemon off;"]
+
+docker build -t masha5035/docker:green -f Dockerfile-green .    # 태깅 작업을 별도로 하지 않고 처음부터 Docker ID를 달아줌
+docker images
+docker run -d -p 8282:80 --name green masha5035/docker:green
+docker ps
+docker push masha5035/docker:green
+
+# Docker 삭제
+docker rm -f 8ebb03b5815c 79fff360aa91
+docker images
+
+--- Pod (쿠버네티스 마스터,워커 노드 클러스터 구성)
+kubectl [명령어] [유형] [이름] [옵션]
+kubectl get node
+# Pod를 배포 (Docker run과 유사)
+kubectl run nginx-pod --image=nginx
+kubectl get pod
+kubectl get service
+kubectl expose pod nginx-pod --name clusterip --type=ClusterIP --port 80   # 외부 접속이 가능하도록 통신 서비스를 시작하기위한 expose (노출) _ 대소문자 구분 주의 !! ex) ClusterIP, NodePort, LoadBalancer ## ClusterIP는 외부에서 접근 불가 내부에서만 통신이 가능 ex) curl 10.104.219.120
+kubectl expose pod nginx-pod --name nodeport --type=NodePort --port 80    # Master node에서 해당 명령어를 실행해야 함, nodeport는 외부에서 접근이 가능 ex) http://172.16.0.201:31309 -> web 접근이 가능하다. ## workernode-ip:nodeport
+kubectl expose pod nginx-pod --name loadbalancer --type=LoadBalancer --external-ip 172.16.0.201 --port 80   # external-ip는 master ip를 적어줌, worker node도 가능함  ## loadbalancer는 nodeport도 있고, external-ip도 제공함  ex http://172.16.0.201/ (port입력 없이도 public ip 처럼 기능 제공)
+## Master가 죽더라도, loadbalancer의 nodeport를 이용해 접근은 가능하다 (MobaXterm에서 poweroff -> vm power off)
+kubectl get pod 
+kubectl get service
+kubectl exec -it nginx-pod -- bash  # nginx-pod의 컨테이너 안쪽을 들여다 보는 명령어
+cp -r images index.html html/
+kubectl cp html nginx-pod:/usr/share/nginx
+kubectl get all  ## 모든 자원을 보여주는 명령어
+kubectl get pod -o wide ## 더 자세한 내용을 보여줌
+kubectl delete svc --all
+kubectl delete pod nginx-pod
+kubectl delete pod,svc --all
+kubectl delete pod nginx-pod --grace-period=0 --force
+kubectl api-resources   # 내가 만드는 자원의 api 버전을 확인, 명령어의 줄임말을 확인할 수 있음
+kubectl get nodes -o wide
+kubectl get nodes -o wide --no-headers
+kubectl get nodes -o wide --no-headers | awk '{print $6}'  # 특정 컬럼만 추출하고 싶을 때, 자동화 등에 필요
+kubectl get nodes -o wide --no-headers | awk '{print $6}' > nodeip.txt  # 추출한 정보를 화면 출력이 아닌 파일로 출력
+
+echo "alias k=kubectl" >> ~/.bashrc
+echo "complete -o default -F __start_kubectl k" >> ~/.bashrc
+source ~/.bashrc
+k get no
+(기타) https://kubernetes.io/ko/docs/reference/kubectl/cheatsheet/  # kubenetes 치트 시트 - 시험 오픈북으로 참고 
+(기타) 메모장 > 설정 > 글꼴 - consolas로 변경하면 들여쓰기 표기가 확실하게 보임
+
+mkdir k8s && cd $_
+vi nginx-pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx-pod
+  labels:
+    app: nginx-pod
+spec:
+  containers:
+  - name: nginx-pod-container
+    image: nginx
+
+kubectl apply -f nginx-pod.yaml
+kubectl get pod -o wide
+kubectl describe pod nginx-pod  # 상세 정보를 보고 싶을 때, 장애 해결을 위해 정보 확인 (Events 부분)
+kubectl edit pod nginx-pod  # vi로 image 등 변경 가능 , ex)   - image: masha5035/docker:blue
+
+
+vi clusterip-pod.yaml  (## 아래 내용 외우는 방법 : a ki me s 아키메스)
+apiVersion: v1
+kind: Service
+metadata:
+  name: clusterip-pod
+spec:
+  type: ClusterIP
+  selector:
+    app: nginx-pod
+  ports:
+  - protocol: TCP
+    port: 80      # -p 80:80 클러스터의 포트  (참고)yaml 파일은 주석을 넣을 수 있으나. dockerfile은 주석 입력 불가
+    targetPort: 80   # 컨테이너 포트
+
+kubectl apply -f clusterip-pod.yaml   
+# worker2에서 curl 10.103.4.39/blue/ -> 이렇게 blue 서비스를 호출할 수 있음
+kubectl get svc -o wide   # label 정보를 추가적으로 보여줌
+kubectl describe svc clusterip-pod
+# k get po --show-labels -> describe로 하면 너무 많은 정보가 보여서 label 정보를 확인하기 위함
+kubectl edit svc clusterip-pod
+
+vi nodeport-pod.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nodeport-pod
+spec:
+  type: NodePort
+  selector:
+    app: nginx-pod
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 80
+    nodePort: 30080
+
+kubectl apply -f nodeport-pod.yaml
+kubectl get svc -o wide
+kubectl describe svc nodeport-pod
+kubectl edit svc nodeport-pod
+
+vi loadbalancer-pod.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: loadbalancer-pod
+spec:
+  type: LoadBalancer
+  externalIPs:
+  - 172.16.0.201
+  - 172.16.0.202
+  - 172.16.0.203
+  - 172.16.0.204 # 하나가 아닌 여러개 가능 (배열)
+  selector:
+    app: nginx-pod
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 80
+
+kubectl apply -f loadbalancer-pod.yaml
+kubectl get svc -o wide
+kubectl describe svc loadbalancer-pod
+kubectl edit svc loadbalancer-pod
+
+kubectl get all
+kubectl delete all --all --grace-period=0 --force
+# k delete po nginx-pod --grace-period 0 --force  
+
+
+--- Deployment (멀티 컨테이너 앱 배포)
+vi deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+spec:
+  replicas: 3 # pod의 갯수
+  selector:
+    matchLabels:
+      app: nginx-deployment # nginx-pod (label 정도를 맞춰야 함)
+
+  template:
+    metadata:
+      name: nginx-deployment
+      labels:
+        app: nginx-deployment # 위 selector의 lebel이 반드시 같아야 함 (다를 경우 apply 실패)
+    spec: 
+      containers:
+      - name: nginx-deployment-container
+        image: nginx
+
+kubectl apply -f deployment.yaml
+# k get deploy
+# k get po -o wide # worker 1,2,3에 pod가 각각 1개씩 생성됨을 확인
+kubectl get deployments.apps -o wide
+kubectl describe deployments.apps nginx-deployment
+kubectl edit deployments.apps nginx-deployment
+# k edit deploy nginx-deployment -> replicas:3 -> 6개로 변경 가능(수동 scale-out), image도 변경 가능
+
+--- Service (자원 메타데이터 관리)
+vi clusterip-deployment.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: clusterip-deployment
+spec:
+  type: ClusterIP
+  selector:
+    app: nginx-deployment
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 80
+
+kubectl apply -f clusterip-deployment.yaml
+kubectl get svc -o wide
+kubectl describe svc clusterip-deployment
+kubectl edit svc clusterip-deployment
+
+vi nodeport-deployment.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nodeport-deployment
+spec:
+  type: NodePort
+  selector:
+    app: nginx-deployment
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 80
+    nodePort: 30080
+
+kubectl apply -f nodeport-deployment.yaml
+kubectl get svc -o wide
+kubectl describe svc nodeport-deployment
+kubectl edit svc nodeport-deployment
+
+vi loadbalancer-deployment.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: loadbalancer-deployment
+spec:
+  type: LoadBalancer
+  externalIPs:
+  - 172.16.0.201
+  selector:
+    app: nginx-deployment
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 80
+
+kubectl apply -f loadbalancer-deployment.yaml
+kubectl get svc -o wide
+kubectl describe svc loadbalancer-deployment
+kubectl edit svc loadbalancer-deployment
+
+--- Deployment 롤링 업데이트 제어
+# 이미 존재하는 Dockerfile을 cp해서 새로운 image를 빌드할 수 있다
+# cp Dockerfile-blue Dockerfile-aws
+# vi Dockerfile-aws
+# docker build -t masha5035/docker:aws -f Dockerfile-aws .
+# docker push masha5035/docker:aws
+kubectl set image deployment.apps/nginx-deployment nginx-deployment-container=masha5035/docker:aws # edit 명령어와 같은 동작 (update) 웹페이지 호출 시 캐시 삭제 (ctrl+F5)
+kubectl get all
+kubectl rollout history deployment nginx-deployment
+kubectl rollout history deployment nginx-deployment --revision=2
+kubectl rollout undo deployment nginx-deployment # 직전(이전)으로 되돌리기 (rolled back)
+# undo를 할 때마다 기존의 revision no는 없어지고 새로운 revision no로 증가됨
+kubectl get all
+kubectl rollout history deployment nginx-deployment
+kubectl rollout history deployment nginx-deployment --revision=3
+kubectl rollout undo deployment nginx-deployment --to-revision=2 # 원하는 revision으로 undo
+
+--- 경로 기반 라우팅(Path-based Routing)
+# ingress 컨트롤러 설치하기
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/cloud/deploy.yaml
+kubectl get all -n ingress-nginx
+# k delete all --all --grace-period 0 --force  ## 강제로 전체 삭제
+
+vi blue.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: blue-service
+spec: # type: ClusterIP -> 생략될 경우 clusterip가 default
+  selector:
+    app: blue
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+--- # 하나의 파일에 여러개의 자원에 대해 작성할 경우 ---를 추가
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: blue
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: blue
+  template:
+    metadata:
+      labels:
+        app: blue
+    spec:
+      containers:
+      - name: blue
+        image: masha5035/docker:blue
+        imagePullPolicy: Always # 이미 다운받은 이미지라도 다시 받게 하는 설정
+        ports:
+        - containerPort: 80 # pod에 전혀 영향을 미치지 않으나 정보성으로 작성
+
+kubectl apply -f blue.yaml
+
+vi green.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: green-service
+spec:
+  selector:
+    app: green
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: green
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: green
+  template:
+    metadata:
+      labels:
+        app: green
+    spec:
+      containers:
+      - name: green
+        image: masha5035/docker:green
+        imagePullPolicy: Always
+
+kubectl apply -f green.yaml
+
+vi ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: example-ingress
+  annotations:
+    kubernetes.io/ingress.class: "nginx" # nginx, haproxy, alb 중에 어떤 것을 쓰겠다라고 하는 선언, 곧 없어질 예정 (추후에는 spec 하위로 이동)
+spec:
+  rules:
+  - http:
+      paths:
+      - path: /blue
+        pathType: Prefix
+        backend:
+          service:
+            name: blue-service
+            port:
+              number: 80
+      - path: /green
+        pathType: Prefix
+        backend:
+          service:
+            name: green-service
+            port:
+              number: 80
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: aws-service
+            port:
+              number: 80
+
+kubectl apply -f ingress.yaml
+# k edit svc -n ingress-nginx ingress-nginx-controller ## externalTrafficPolicy: Local -> Cluster로 변경해야 외부에서 접근이 가능
+
+vi aws.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: aws-service
+spec:
+  selector:
+    app: aws
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aws
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aws
+  template:
+    metadata:
+      labels:
+        app: aws
+    spec:
+      containers:
+      - name: aws
+        image: masha5035/docker:aws
+        imagePullPolicy: Always
+
+
+--- ConfigMap과 Secret (환경 변수 및 민감 정보 관리)
+vi configmap-wordpress.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: config-wordpress
+  namespace: default
+data:
+  MYSQL_ROOT_HOST: '%'
+  MYSQL_DATABASE: wordpress # create database
+
+kubectl apply -f configmap-wordpress.yaml
+kubectl describe configmaps config-wordpress
+
+vi secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: my-secret
+stringData:
+  MYSQL_ROOT_PASSWORD: Test1234! # root 사용자의 pw를 정의
+  MYSQL_USER: wpuser # create user account
+  MYSQL_PASSWORD: wppass
+
+kubectl apply -f secret.yaml # secret.yaml 파일을 암호화하고 k8s는 있지 않음, 암호화 하는 sw는 서드파티에서 제공받아야 함
+kubectl describe secrets my-secret
+
+vi mysql-pod-svc.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mysql-pod
+  labels:
+    app: mysql-pod
+spec:
+  containers:
+  - name: mysql-container
+    image: mysql
+    envFrom:
+    - configMapRef:
+        name: config-wordpress
+    - secretRef:
+        name: my-secret
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-svc
+spec:
+  type: ClusterIP
+  selector:
+    app: mysql-pod
+  ports:
+  - protocol: TCP
+    port: 3306
+
+kubectl apply -f mysql-pod-svc.yaml
+
+vi wordpress-pod-svc.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: wordpress-pod
+  labels:
+    app: wordpress-pod
+spec:
+  containers:
+  - name: wordpress-container
+    image: wordpress
+    env:
+    - name: WORDPRESS_DB_HOST
+      value: mysql-svc
+    - name: WORDPRESS_DB_USER
+      valueFrom:
+        secretKeyRef:
+          name: my-secret
+          key: MYSQL_USER
+    - name: WORDPRESS_DB_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: my-secret
+          key: MYSQL_PASSWORD
+    - name: WORDPRESS_DB_NAME
+      valueFrom:
+        configMapKeyRef:
+          name: config-wordpress
+          key: MYSQL_DATABASE
+    ports:
+    - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: wordpress-svc
+spec:
+  type: LoadBalancer
+  externalIPs:
+  - 172.16.0.201
+  selector:
+    app: wordpress-pod
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 80
+
+kubectl apply -f wordpress-pod-svc.yaml
+
+--- nodename (파드 스케줄링)
+vi pod-nodename.yaml 
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-nodename-metadata
+  labels:
+    app: pod-nodename-labels
+spec:
+  containers:
+  - name: pod-nodename-containers
+    image: nginx
+    ports:
+    - containerPort: 80
+  nodeName: worker3 # 특정 node에 pod를 만들 수 있음 (수동으로 스케쥴링)
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pod-nodename-service
+spec:
+  type: NodePort
+  selector:
+    app: pod-nodename-labels
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 80
+
+--- 인증과 권한
+kubectl create serviceaccount john-sa --namespace=default
+
+vi role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: default
+  name: pod-reader
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+
+vi rolebinding.yaml # account와 role을 연결시켜 주는 것
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: read-pods
+  namespace: default
+subjects:
+- kind: ServiceAccount
+  name: john-sa
+  namespace: default
+roleRef:
+  kind: Role
+  name: pod-reader
+  apiGroup: rbac.authorization.k8s.io
+
+kubectl apply -f role.yaml
+kubectl apply -f rolebinding.yaml
+
+kubectl create token john-sa --namespace=default 
+# woker1에 아래 명령어 수행
+kubectl config set-cluster kubernetes --server=https://172.16.0.201:6443 --certificate-authority=/etc/kubernetes/pki/ca.crt
+# master1에 생성된 token 정보를 복사 (더블클릭)
+
+# woker1에 아래 명령어 수행
+kubectl config set-credentials john-sa --token=eyJhbGciOiJSUzI1NiIsImtpZCI6Il9EZDhkNEVmME5BLXc5UGliQzBTNWdMOC1qVnNhd1pBVXBNYjZza051YWMifQ.eyJhdWQiOlsiaHR0cHM6Ly9rdWJlcm5ldGVzLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWwiXSwiZXhwIjoxNzU1NTkxOTgwLCJpYXQiOjE3NTU1ODgzODAsImlzcyI6Imh0dHBzOi8va3ViZXJuZXRlcy5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsIiwianRpIjoiN2ZjZWNmNjktOTEzOC00YjI0LTlkMTAtY2M3MWU3NjA2N2NmIiwia3ViZXJuZXRlcy5pbyI6eyJuYW1lc3BhY2UiOiJkZWZhdWx0Iiwic2VydmljZWFjY291bnQiOnsibmFtZSI6ImpvaG4tc2EiLCJ1aWQiOiIxZjM3ZWZlZS03MThlLTQ5NDMtYmEwYy02MWNiZWU5ZTI0NTIifX0sIm5iZiI6MTc1NTU4ODM4MCwic3ViIjoic3lzdGVtOnNlcnZpY2VhY2NvdW50OmRlZmF1bHQ6am9obi1zYSJ9.ELEuMe17n_4QtDMka4UlumQqYKT94xdBQKWSCKulbWtXjU2Fxg0YtvKbqMNTk3gvk34v5DmIyfdrzq9487kWbO4z9C3IlJywMKJk1GGvEzI0ngNqTv8f9AEV5bBQBg2uhVjGggulefFvB95ocDJ0Ju7xP2L32uE5ZsdJM37X5wePo57O4BbF815CuEzXW-dIXM70dAudqsqtHTISLat5WOc8ZVImuuMc353QRduCtK0ZNR8ApruTRH_7vz6_l_5BH1TSwJSGEhPC6ZATxY0-X7NuAYFLQj8XGgQ5PtByCMko660mzpB8EfIMtBBOuVRpHvlpGdUtTvQhQOwHFk2BmQ
+
+# woker1에 아래 명령어 수행
+kubectl config set-context john-context --cluster=kubernetes --namespace=default --user=john-sa
+kubectl config use-context john-context --cluster=kubernetes --namespace=default --user=john-sa
+# 기존에는 worker1에서 kubectl get po 입력시 에러가 발생했으나 위의 계정 정보를 추가 후 정상 노출됨
+
+
+
+kubectl get pods
+kubectl auth can-i list pods
+kubectl auth can-i get pods
+kubectl auth can-i create pods
+
+--- pv, pvc (영구 볼륨 관리)
+vi pv-pvc-pod.yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: task-pv-volume
+  labels:
+    type: local
+spec:
+  storageClassName: manual
+  capacity:
+    storage: 10Mi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: "/mnt/data"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: task-pv-claim
+spec:
+  storageClassName: manual
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Mi
+  selector:
+    matchLabels:
+      type: local
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: task-pv-pod
+  labels:
+    app: task-pv-pod
+spec:
+  volumes:
+    - name: task-pv-storage
+      persistentVolumeClaim:
+        claimName: task-pv-claim
+  containers:
+    - name: task-pv-container
+      image: nginx
+      volumeMounts:
+        - mountPath: "/usr/share/nginx/html"
+          name: task-pv-storage
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: task-pv-pod-svc
+spec:
+  type: LoadBalancer
+  externalIPs:
+  - 172.16.0.204
+  selector:
+    app: task-pv-pod
+  ports:
+  - protocol: TCP
+    port: 80
+
+kubectl apply -f pv-pvc-pod.yaml
+
+--- HPA (DNS와 오토스케일링)
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+kubectl edit deployment metrics-server -n kube-system
+- --kubelet-insecure-tls
+
+kubectl top node
+
+vi nginx-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: registry.k8s.io/hpa-example
+        resources:
+          requests:
+            cpu: "100m"
+          limits:
+            cpu: "200m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-service
+spec:
+  type: NodePort
+  selector:
+    app: nginx
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+
+kubectl apply -f nginx-deployment.yaml
+
+kubectl autoscale deployment nginx-deployment --cpu-percent=50 --min=1 --max=5
+
+kubectl get hpa
+
+kubectl run -i --tty load-generator --rm --image=busybox:1.28 --restart=Never -- /bin/sh -c "while sleep 0.01; do wget -q -O- http://nginx-service; done"
+
+kubectl get hpa
+
+kubectl get pods -l app=nginx
+
+--- 로깅
+kubectl logs -n kube-system kube-apiserver-master1
+
+--- Kubernetes 프로메테우스(클러스터의 정보를 저장하는 저장소), 그라파나 (모니터링)
+# helm? dnf, apt-get install처럼 pkg 설치가 가능
+curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 # helm을 설치하기 위한 sh를 다운로드
+chmod 700 get_helm.sh
+./get_helm.sh
+helm repo add stable https://charts.helm.sh/stable # helm 설치를 위한 준비
+helm repo update
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm install prometheus-community/kube-prometheus-stack --generate-name # helm 설치
+kubectl get svc
+kubectl edit service kube-prometheus-stack-1731587948-grafana 
+kubectl get secrets
+kubectl get secret kube-prometheus-stack-1731587948-grafana -o jsonpath="{.data.admin-password}" | base64 --decode;echo
+admin/prom-operator # grafana 로그인 계정정보
+kubectl edit svc kube-prometheus-stack-1755589446-grafana
+# type: ClusterIP -> LoadBalancer로 변경
+# 그리고 아래 내용을 추가
+  externalIPs:
+  - 172.16.0.202
+
+
+--- Istio (서비스 메시와 장애 관리) # istio (사이드카와 같은 개념 - pod 안에 컨테이너가 2개 생김=> traffic을 제어하는 기능)
+curl -L https://istio.io/downloadIstio | sh -
+cd istio-1.27.0
+export PATH=$PWD/bin:$PATH
+istioctl install -f samples/bookinfo/demo-profile-no-gateways.yaml -y
+
+dnf install -y git
+kubectl label namespace default istio-injection=enabled
+kubectl get crd gateways.gateway.networking.k8s.io &> /dev/null || \
+{ kubectl kustomize "github.com/kubernetes-sigs/gateway-api/config/crd?ref=v1.3.0" | kubectl apply -f -; }
+kubectl apply -f samples/bookinfo/platform/kube/bookinfo.yaml
+kubectl get svc
+kubectl get po
+kubectl exec "$(kubectl get pod -l app=ratings -o jsonpath='{.items[0].metadata.name}')" -c ratings -- curl -sS productpage:9080/productpage | grep -o "<title>.*</title>" # istio를 테스트하기 위한 sample 환경을 구성하여 테스트
+
+kubectl apply -f samples/bookinfo/gateway-api/bookinfo-gateway.yaml
+kubectl get svc
+kubectl edit svc bookinfo-gateway-istio
+kubectl get gateway
+kubectl apply -f samples/addons
+kubectl rollout status deployment/kiali -n istio-system 
+kubectl get svc -n istio-system
+kubectl edit svc -n istio-system kiali
+# type: ClusterIP -> LoadBalancer로 변경
+# 그리고 아래 내용을 추가
+  externalIPs:
+  - 172.16.0.204
+for i in $(seq 1 100); do curl -s -o /dev/null "http://192.168.0.32/productpage"; done &
+(참고) https://istio.io/latest/docs/setup/getting-started/ 
