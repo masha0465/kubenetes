@@ -1,0 +1,30 @@
+# 쿠버네티스 환경 구축 - 25/08/18
+
+* 강사님 mybox 주소 https://naver.me/II41WL5r
+ - 수업자료/설치방법 : mybox에서 받을 수 있는데 (파일 비밀번호는 수업책자 맨 앞에 이메일주소)
+* berryz webshare (수업 자료 공유 사이트)
+
+* 구축은 vmware로 제공하고 (추후 구축 매뉴얼 제공 예정)
+* vmware workstation pro - edit - virtual network editor - vmnet8 nat 선택 - 하단의 subnet IP 내역을 수정 - 172.16.0.0
+* DHCP Settings 버튼 클릭 -  starting 172.16.0.128 / ending 172.16.0.254
+* NAT Settings - Gateway IP - 172.16.0.2
+
+* File - Open - 다운로드 > master1 파일을 열기 - 별도 입력 없이 import 버튼 클릭 - powor on (생성된 vm 켜기)
+
+* root/Test1234! - 로그인
+* ip a (ip 설정 내역에 대한 확인)
+
+* MobaXterm - SSH - 172.16.0.201 / root 로 로그인 (pw는 Test1234!)
+
+* Master1 Docker 엔진도 설치/ Master Node로도 함께 활용하도록 실습 예정
+
+* DockerFile 내의 명령어 - ENTRYPOINT (반드시 실행되어야 하는 명령어)/ CMD (-옵션을 통해 flexible 하게 사용가능한 명령)
+
+* Master (Main) / Worker (Node)
+
+* kubectl get node
+* worker1, 2, 3 모두 VMWARE에서 open 및 power on
+
+* MobaXterm > MultiExec -> 여러 창을 한꺼번에 입력할 수 있음
+
+* 경로기반라우팅 (ingress) - MSA (micro service achitecture)
